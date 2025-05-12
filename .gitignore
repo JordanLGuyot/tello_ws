@@ -1,0 +1,18 @@
+# --- ROS 2 workspace build artifacts ---
+/build/
+/install/
+/log/
+
+# --- Python bytecode, caches ---
+**/__pycache__/
+**/*.py[cod]
+*.so
+
+# --- Editor swaps, OS files ---
+*~
+.DS_Store
+Thumbs.db
+
+# --- VSCode, JetBrains, etc. ---
+.vscode/
+.idea/
