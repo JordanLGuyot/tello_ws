@@ -60,3 +60,50 @@ source install/setup.bash
 ```bash
 ros2 run tello tello --ros-args -p tello_ip:=192.168.10.1 -r image_raw:=camera
 ```
+
+## Tello Control (teleop-keyboard)
+A simple ROS 2 Humble (rclpy) tele-operation node for DJI Tello drones.  
+- Python implementation that listens for keypresses (via OpenCV) and publishes the corresponding takeoff/land/flip/emergency or velocity commands.
+
+---
+
+### Features
+
+- **Takeoff / Land / Emergency / Flip**  
+- **Incremental velocity control** on all axes (X, Y, Z, yaw)  
+- **“Stop”** key to zero out all velocities immediately  
+- Publishes to the same topics as the upstream `tello_driver` package
+
+### Keyboard Controls
+| Key | Action                              |
+| --- | ----------------------------------- |
+| `t` | Take off                            |
+| `l` | Land                                |
+| `f` | Flip                                |
+| `e` | Emergency stop (kills motors)       |
+| `x` | **Stop** (zeroes all velocity axes) |
+| ←/→ | Yaw left / right  (incremental)     |
+| ↑/↓ | Ascend / descend  (incremental)     |
+| `w` | Strafe left  (incremental)          |
+| `s` | Strafe right (incremental)          |
+| `a` | Forward     (incremental)           |
+| `d` | Backward    (incremental)           |
+
+### To run Tello Control:
+1. Build the workspace containing the particular packages, from the base directory of GitHub:
+```bash
+colcon build --packages-select tello tello_msg tello_control --symlink-install
+```
+2. Source the workspace:
+```bash
+source install/setup.bash
+```
+3. Run the launch file for the driver:
+```bash
+ros2 run tello tello --ros-args -p tello_ip:=192.168.10.1 -r image_raw:=camera
+```
+
+4. Run the Tello Control node:
+```bash
+ros2 run tello_control tello_control
+```
