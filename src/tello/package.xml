@@ -4,7 +4,7 @@
   <name>tello</name>
   <version>0.0.1</version>
   <description>Package to control DJI tello drones, provides data and control over the drone based on the official SDK provided by DJI.</description>
-  <maintainer email="jordan.l.guyot@gmail.com">tentone</maintainer>
+  <maintainer email="jordan.l.guyot@gmail.com">JordanLGuyot</maintainer>
   <license>MIT</license>
 
   <test_depend>python3-pytest</test_depend>

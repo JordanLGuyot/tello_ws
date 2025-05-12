@@ -4,7 +4,7 @@
   <name>tello_msg</name>
   <version>0.0.1</version>
   <description>Custom messages used by the DJI tello control package.</description>
-  <maintainer email="jordan.l.guyot@gmail.com">tentone</maintainer>
+  <maintainer email="jordan.l.guyot@gmail.com">JordanLGuyot</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
