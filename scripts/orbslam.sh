@@ -1,164 +1,141 @@
 #!/usr/bin/env bash
-# ------------------------------------------------------------------
-# orbslam3_install.sh – Local OpenCV + Pangolin + ORB‑SLAM3 (+ROS2)
-# Ubuntu 22.04 • ROS 2 Humble • rev‑12
-# ------------------------------------------------------------------
+# orbslam.sh • rev‑19 • wrapper from JordanLGuyot fork (humble)
 set -euo pipefail
 NPROC=$(nproc)
 
-# ---------- 0.  CONFIGURABLE PATHS --------------------------------
-WS=~/src/tello_ws                 # your colcon workspace
+# ── paths ─────────────────────────────────────────────────────────
+WS=~/src/tello_ws
 LIBS_DIR="$WS/libs"
-OPENCV_DIR="$LIBS_DIR/opencv"     # will contain opencv/$VERSION/{src,install}
-OPENCV_VERSION=4.6.0
-PANGO_DIR="$LIBS_DIR/Pangolin"    # will contain Pangolin/{src,install}
+PANGO_DIR="$LIBS_DIR/Pangolin"
 CORE_DIR="$LIBS_DIR/ORB_SLAM3"
 WRAP_DIR="$LIBS_DIR/ORB_SLAM3_ROS2"
 
-# ---------- Helper -------------------------------------------------
+# ── helpers ───────────────────────────────────────────────────────
 install_if_missing() {
-  local PKG="$1"
-  if dpkg-query -W -f='${Status}' "$PKG" 2>/dev/null | grep -q "ok installed"; then
-    echo " ✔ $PKG already installed (APT)"
-  else
-    echo " ➜ Installing $PKG (APT)"
-    sudo apt-get update -qq
-    sudo apt-get install -y "$PKG"
-  fi
+  dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q "ok installed" \
+    || { echo " ➜ Installing $1"; sudo apt-get update -qq; sudo apt-get install -y "$1"; }
 }
+BRC="$HOME/.bashrc"
+add_export() { grep -qxF "$1" "$BRC" || echo "$1" >> "$BRC"; }
 
-pkg_config_missing() {
-  # return 0 (true) if the given .pc file is NOT found
-  ! pkg-config --exists "$1"
-}
-
-add_path_if_missing() {
-  # idempotently prepend a path to an env‑var
-  local var="$1" path="$2"
-  if [[ -d "$path" ]] && [[ ":${!var}:" != *":${path}:"* ]]; then
-    export "$var"="$path:${!var:-}"
-  fi
-}
-
+# ── 1. ROS 2 env & APT deps ───────────────────────────────────────
+set +u; source /opt/ros/humble/setup.bash; set -u
+for P in git build-essential cmake pkg-config \
+         ros-humble-rclcpp ros-humble-message-filters ros-humble-vision-opencv \
+         python3-ament-package \
+         libeigen3-dev libopencv-dev libboost-all-dev libsuitesparse-dev \
+         libyaml-cpp-dev libblas-dev liblapack-dev \
+         libglew-dev libglfw3-dev libgl1-mesa-dev libegl1-mesa-dev \
+         libxxf86vm-dev libxkbcommon-dev; do install_if_missing "$P"; done
 mkdir -p "$LIBS_DIR"
 
-# ---------- 1.  ROS 2 environment ---------------------------------
-set +u
-source /opt/ros/humble/setup.bash
-set -u
+# ── 2. Pangolin (skip if already installed) ───────────────────────
+if ! pkg-config --exists pangolin; then
+  git -C "$LIBS_DIR" clone --recursive https://github.com/stevenlovegrove/Pangolin.git "$PANGO_DIR" 2>/dev/null || true
+  cd "$PANGO_DIR"; git pull --ff-only
+  mkdir -p build && cd build
+  cmake .. -DCMAKE_BUILD_TYPE=Release
+  make -j"$NPROC"; sudo make install; sudo ldconfig
+  touch "${PANGO_DIR}/COLCON_IGNORE"
+fi
 
-# ---------- 2.  APT dependencies ----------------------------------
-echo "=== Installing required APT packages ==="
-for PKG in \
-    git build-essential cmake pkg-config ninja-build \
-    python3-ament-package python3-numpy python3-opencv \
-    libeigen3-dev libboost-all-dev libsuitesparse-dev \
-    libyaml-cpp-dev libblas-dev liblapack-dev libssl-dev \
-    libglew-dev libglfw3-dev libgl1-mesa-dev libegl1-mesa-dev \
-    libxxf86vm-dev libxkbcommon-dev ; do
-  install_if_missing "$PKG"
-done
+# ─── 3. Sophus -----------------------------------------------------
+echo ">>> Verifying Sophus headers ..."
+cmake -P - <<'EOF' 2>/dev/null && SOPHUS_OK=1 || SOPHUS_OK=0
+find_package(Sophus CONFIG QUIET)
+EOF
 
-# ---------- 3.  OpenCV $OPENCV_VERSION ----------------------------
-if pkg-config --exists opencv4; then
-  echo "✔ OpenCV already available via pkg‑config – skipping local build"
+
+if [ "$SOPHUS_OK" -eq 1 ]; then
+ echo ">>> Sophus already present – skipping."
 else
-  echo "=== Building OpenCV $OPENCV_VERSION locally ==="
-  OPENCV_SRC="$OPENCV_DIR/src"
-  OPENCV_INSTALL="$OPENCV_DIR/install"
-  if [[ -d "$OPENCV_SRC" ]]; then
-    cd "$OPENCV_SRC" && git fetch --quiet && git checkout "tags/$OPENCV_VERSION" --quiet
-  else
-    git -C "$LIBS_DIR" clone --depth 1 --branch "$OPENCV_VERSION" https://github.com/opencv/opencv.git "$OPENCV_SRC"
-  fi
-  mkdir -p "$OPENCV_SRC/build" && cd "$OPENCV_SRC/build"
-  cmake .. \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DWITH_CUDA=OFF \
-    -DCMAKE_INSTALL_PREFIX="$OPENCV_INSTALL" \
-    -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_EXAMPLES=OFF \
-    -GNinja
-  ninja -j"$NPROC"
-  ninja install
-  # Expose to the current shell
-  add_path_if_missing PKG_CONFIG_PATH "$OPENCV_INSTALL/lib/pkgconfig"
-  add_path_if_missing LD_LIBRARY_PATH "$OPENCV_INSTALL/lib"
-  add_path_if_missing CMAKE_PREFIX_PATH "$OPENCV_INSTALL"
+ echo ">>> Sophus not found – installing from Thirdparty/Sophus ..."
+ pushd "${LIBS_DIR}/ORB_SLAM3/Thirdparty/Sophus" >/dev/null
+
+
+   # Configure + build (header‑only, so this is quick)
+   cmake -B build \
+         -DCMAKE_BUILD_TYPE=Release \
+         -DCMAKE_INSTALL_PREFIX=/usr/local     # use $HOME/.local if you prefer
+   cmake --build build -j"${NPROC}"
+
+
+   # Install (headers + SophusConfig.cmake)
+   sudo cmake --install build
+
+
+ popd >/dev/null
+ echo ">>> Sophus installation complete."
 fi
 
-# ---------- 4.  Pangolin ------------------------------------------
-if pkg-config --exists pangolin; then
-  echo "✔ Pangolin already available via pkg‑config – skipping local build"
+
+# ── 4. ORB‑SLAM3 core (gnu++14) ───────────────────────────────────
+git -C "$LIBS_DIR" clone https://github.com/UZ-SLAMLab/ORB_SLAM3.git "$CORE_DIR" 2>/dev/null || true
+cd "$CORE_DIR"; git submodule update --init --recursive
+
+if [ ! -f build/libORB_SLAM3.so ]; then
+  sed -i '1i set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++14")' CMakeLists.txt
+  sed -i 's/cmake .. -DCMAKE_BUILD_TYPE=Release.*/cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=14 -DCMAKE_CXX_FLAGS=-std=gnu++14/' build.sh
+  grep -rl --exclude-dir=.git '\-std=c\+\+11\|\-std=c\+\+17\|\-std=gnu\+\+17\|\-std=c\+\+0x' . |
+      xargs -r sed -i -E 's/-std=(c\+\+(11|17|0x)|gnu\+\+17)/-std=gnu++14/g' || true
+  sed -i '1i add_compile_options(-Wno-deprecated-declarations -Wno-unused-variable -Wno-aggressive-loop-optimizations -Wno-sign-compare -Wno-reorder)' CMakeLists.txt
+  grep -rl --exclude-dir=.git '\-Werror' . | xargs -r sed -i 's/-Werror//g' || true
+  rm -rf build
+  echo " • Building ORB_SLAM3 core…"
+  chmod +x build.sh; ./build.sh
+  touch "${CORE_DIR}/COLCON_IGNORE"
 else
-  echo "=== Building Pangolin locally ==="
-  PANGO_SRC="$PANGO_DIR/src"
-  PANGO_INSTALL="$PANGO_DIR/install"
-  if [[ -d "$PANGO_SRC" ]]; then
-    cd "$PANGO_SRC" && git pull --ff-only
-  else
-    git -C "$LIBS_DIR" clone --recursive https://github.com/stevenlovegrove/Pangolin.git "$PANGO_SRC"
-  fi
-  mkdir -p "$PANGO_SRC/build" && cd "$PANGO_SRC/build"
-  cmake .. \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX="$PANGO_INSTALL" \
-    -GNinja
-  ninja -j"$NPROC"
-  ninja install
-  # Expose to the current shell
-  add_path_if_missing PKG_CONFIG_PATH "$PANGO_INSTALL/lib/pkgconfig"
-  add_path_if_missing LD_LIBRARY_PATH "$PANGO_INSTALL/lib"
-  add_path_if_missing CMAKE_PREFIX_PATH "$PANGO_INSTALL"
+  echo " ✔ ORB_SLAM3 core already built – skipping"
 fi
 
-# ---------- 5.  ORB‑SLAM3 core ------------------------------------
-echo "=== Preparing ORB_SLAM3 core ==="
-if [[ -d "$CORE_DIR" ]]; then
-  echo " ✔ ORB_SLAM3 repo already present"
+# ── 5. ORB_SLAM3_ROS2 wrapper (fork • branch humble) ──────────────
+if [ ! -d "$WRAP_DIR" ]; then
+  git -C "$LIBS_DIR" clone -b humble git@github.com:JordanLGuyot/ORB_SLAM3_ROS2.git "$WRAP_DIR"
 else
-  git -C "$LIBS_DIR" clone https://github.com/UZ-SLAMLab/ORB_SLAM3.git "$CORE_DIR"
+  cd "$WRAP_DIR"
+  git remote set-url origin git@github.com:JordanLGuyot/ORB_SLAM3_ROS2.git
+  git fetch origin humble
+  git checkout humble
+  git pull --ff-only
+fi
+cd "$WRAP_DIR"; git submodule update --init --recursive
+
+# 5a. Vocabulary folder
+VOCAB_DIR="$WRAP_DIR/Vocabulary"
+[ -e "$VOCAB_DIR" ] && [ ! -d "$VOCAB_DIR" ] && rm -f "$VOCAB_DIR"
+mkdir -p "$VOCAB_DIR"
+[ -f "$VOCAB_DIR/ORBvoc.txt" ] || cp "$CORE_DIR/Vocabulary/ORBvoc.txt" "$VOCAB_DIR/"
+
+# 5b. Launch file for Tello
+if [ -f launch/mono_inertial.launch.py ]; then
+  install -Dm644 launch/mono_inertial.launch.py launch/mono_inertial_tello.launch.py
 fi
 
-# Patch CMakeLists to C++14 once only
-if ! grep -q "CXX_STANDARD 14" "$CORE_DIR/CMakeLists.txt"; then
-  echo " ➜ Patching ORB_SLAM3 CMakeLists.txt for C++14"
-  sed -i 's/++11/++14/g' "$CORE_DIR/CMakeLists.txt"   # :contentReference[oaicite:0]{index=0}:contentReference[oaicite:1]{index=1}
+# 5c. Exports (temp + bashrc)
+export ORB_SLAM3_ROOT_DIR="$CORE_DIR"
+export ORB_SLAM3_ROOT="$CORE_DIR"
+export CMAKE_PREFIX_PATH="$CORE_DIR/Thirdparty/g2o:$CORE_DIR:$CMAKE_PREFIX_PATH"
+
+add_export "export ORB_SLAM3_ROOT_DIR=\"$CORE_DIR\""
+add_export "export ORB_SLAM3_ROOT=\"$CORE_DIR\""
+add_export "export CMAKE_PREFIX_PATH=\"$CORE_DIR/Thirdparty/g2o:\$CMAKE_PREFIX_PATH\""
+
+if [ ! -d install/orbslam3_ros2 ]; then
+  echo "=== Building ORB_SLAM3_ROS2 (humble) ==="
+  colcon build --merge-install --parallel-workers "$NPROC" \
+               --cmake-args -DCMAKE_BUILD_TYPE=Release \
+                            -DORB_SLAM3_ROOT="$CORE_DIR"
+else
+  echo " ✔ ORB_SLAM3_ROS2 already built – skipping"
 fi
 
-echo "=== Building ORB_SLAM3 ==="
-cd "$CORE_DIR"
-chmod +x build.sh
-NUM_BUILD_TRIES=3
-for ((i=1; i<=NUM_BUILD_TRIES; i++)); do
-  if ./build.sh -j"$NPROC"; then
-    echo " ✔ ORB_SLAM3 built successfully"
-    break
-  else
-    echo " ✖ ORB_SLAM3 build failed (attempt $i/$NUM_BUILD_TRIES) – retrying"
-    sleep 1
-  fi
-done
-
-# ---------- 6.  (Optional) ROS2 wrapper ---------------------------
-# Uncomment when you’re ready:
-# echo "=== Cloning ROS2 wrapper ==="
-# if [[ -d "$WRAP_DIR" ]]; then
-#   echo " ✔ ORB_SLAM3_ROS2 repo already present"
-# else
-#   git -C "$LIBS_DIR" clone https://github.com/ToniRV/ORB_SLAM3-ROS2.git "$WRAP_DIR"
-# fi
-# cd "$WRAP_DIR"
-# colcon build --merge-install --cmake-args \
-#   -DPangolin_DIR="$PANGO_INSTALL" \
-#   -DOpenCV_DIR="$OPENCV_INSTALL"
-
-# ---------- 7.  User hints ----------------------------------------
-echo ""
-echo "==================================================================="
-echo "  ✓  All done!  To make these local libs discoverable in new shells,"
-echo "  add the following lines to your ~/.bashrc (or source them now):"
-echo ""
-echo "    export PKG_CONFIG_PATH=\"${PKG_CONFIG_PATH:-}\""
-echo "    export LD_LIBRARY_PATH=\"${LD_LIBRARY_PATH:-}\""
-echo "    export CMAKE_PREFIX_PATH=\"${CMAKE_PREFIX_PATH:-}\""
-echo "==================================================================="
+# ── 6. Done ───────────────────────────────────────────────────────
+echo -e "\n✅ All components built."
+echo "👉 New terminal or 'source ~/.bashrc', then run:"
+cat <<'EOF'
+ros2 launch orbslam3_ros2 mono_inertial_tello.launch.py \
+     vocab:=$HOME/src/tello_ws/libs/ORB_SLAM3_ROS2/Vocabulary/ORBvoc.txt \
+     config:=$HOME/tello_ws/config/tello_mono_imu.yaml \
+     image_topic:=/camera/camera_raw \
+     imu_topic:=/imu
+EOF
